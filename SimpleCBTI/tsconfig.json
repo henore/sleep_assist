@@ -1,0 +1,11 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true,
+    "paths": {
+      "react-native-iap": ["./node_modules/react-native-iap/lib/typescript/src/index.d.ts"]
+    }
+  },
+  "exclude": ["src/__tests__"]
+}
