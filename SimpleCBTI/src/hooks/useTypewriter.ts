@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-export function useTypewriter(text: string, msPerChar: number = 25) {
+export function useTypewriter(text: string, msPerChar: number = 25, animate = true) {
   const [displayed, setDisplayed] = useState('');
   const [done, setDone] = useState(false);
   const indexRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (!text) return;
     indexRef.current = 0;
     setDisplayed('');
     setDone(false);
+    if (!text || !animate) return;
 
     timerRef.current = setInterval(() => {
       indexRef.current++;
@@ -24,7 +24,7 @@ export function useTypewriter(text: string, msPerChar: number = 25) {
     }, msPerChar);
 
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [text, msPerChar]);
+  }, [text, msPerChar, animate]);
 
   const skip = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -32,5 +32,5 @@ export function useTypewriter(text: string, msPerChar: number = 25) {
     setDone(true);
   }, [text]);
 
-  return { displayed, done, skip };
+  return { displayed: animate ? displayed : text, done: !animate || !text || done, skip };
 }

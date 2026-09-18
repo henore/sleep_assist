@@ -2,7 +2,7 @@ import { calcSleepEfficiency } from '../utils/time';
 import { calculate7dStats } from '../services/statsCalculator';
 import { evaluateSleepSession, POSITIVE_SIGNALS, ATTENTION_SIGNALS, computeQuestionWeights } from '../services/ruleEngine';
 import { selectDailyQuestions, TECHNIQUE_DEFS } from '../constants/techniques';
-import { buildDailyInsightPayload } from '../services/insightApi';
+import { buildDailyInsightPayload, buildEligibleFocusActions, DAILY_INSIGHT_PROMPT_VERSION } from '../services/insightApi';
 import { SleepRecord, Stats7d, QuestionWeights } from '../types/sleep';
 
 // --- helpers ---
@@ -190,7 +190,7 @@ describe('ruleEngine — sleep onset issues', () => {
     expect(result.attentionSignals).toContain(ATTENTION_SIGNALS.ONSET_LONGER_THAN_USUAL);
   });
 
-  test('focus becomes stimulus_control on long onset', () => {
+  test('isolated long onset does not force a focus change', () => {
     const stats = goodStats();
     stats.wakeTimeConsistency = 'moderate';
     const result = evaluateSleepSession(
@@ -198,7 +198,7 @@ describe('ruleEngine — sleep onset issues', () => {
       [],
       stats,
     );
-    expect(result.recommendedFocus).toBe('stimulus_control');
+    expect(result.recommendedFocus).toBe('maintenance');
   });
 });
 
@@ -515,5 +515,184 @@ describe('selectDailyQuestions — eligibility', () => {
       });
       expect(result).not.toContain('SC05');
     }
+  });
+});
+
+// ====== 15. Prompt version ======
+
+describe('DAILY_INSIGHT_PROMPT_VERSION', () => {
+  test('is v2', () => {
+    expect(DAILY_INSIGHT_PROMPT_VERSION).toBe('v2');
+  });
+});
+
+// ====== 16. eligibleFocusActions ======
+
+describe('buildEligibleFocusActions', () => {
+  test('excludes not_applicable actions', () => {
+    const actions = [
+      { id: 'SC03', category: 'stimulus_control', result: 'not_applicable' },
+      { id: 'CR04', category: 'cognitive_restructuring', result: 'done' },
+      { id: 'SR05', category: 'sleep_restriction', result: 'not_done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'stimulus_control', goodStats());
+    expect(eligible.find((a) => a.id === 'SC03')).toBeUndefined();
+    expect(eligible.find((a) => a.id === 'CR04')).toBeDefined();
+    expect(eligible.find((a) => a.id === 'SR05')).toBeDefined();
+  });
+
+  test('adds supplementary actions when no match for recommendedFocus', () => {
+    const actions = [
+      { id: 'MR01', category: 'mindfulness', result: 'done' },
+      { id: 'MR02', category: 'mindfulness', result: 'done' },
+      { id: 'CR01', category: 'cognitive_restructuring', result: 'not_done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'stimulus_control', goodStats());
+    const scActions = eligible.filter((a) => a.category === 'stimulus_control');
+    expect(scActions.length).toBeGreaterThan(0);
+    expect(scActions[0].result).toBe('suggested');
+  });
+
+  test('does not add supplementary for maintenance focus', () => {
+    const actions = [
+      { id: 'SC01', category: 'stimulus_control', result: 'done' },
+      { id: 'CR01', category: 'cognitive_restructuring', result: 'done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'maintenance', goodStats());
+    expect(eligible.every((a) => a.result !== 'suggested')).toBe(true);
+  });
+
+  test('sorts: recommendedFocus category first, not_done before done', () => {
+    const actions = [
+      { id: 'CR04', category: 'cognitive_restructuring', result: 'done' },
+      { id: 'SC03', category: 'stimulus_control', result: 'not_done' },
+      { id: 'MR01', category: 'mindfulness', result: 'done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'stimulus_control', goodStats());
+    expect(eligible[0].id).toBe('SC03');
+    expect(eligible[0].category).toBe('stimulus_control');
+  });
+
+  test('each action has non-empty text', () => {
+    const actions = [
+      { id: 'SC01', category: 'stimulus_control', result: 'done' },
+      { id: 'CR01', category: 'cognitive_restructuring', result: 'not_done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'stimulus_control', goodStats());
+    for (const a of eligible) {
+      expect(a.text.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ====== 17. Payload includes eligibleFocusActions ======
+
+describe('buildDailyInsightPayload — eligibleFocusActions', () => {
+  const dummyT = new Proxy({} as any, { get: (_, key) => String(key) });
+
+  test('payload includes eligibleFocusActions array', () => {
+    const payload = buildDailyInsightPayload({
+      bedtime: new Date('2025-01-10T23:00:00'),
+      wakeTime: new Date('2025-01-11T07:00:00'),
+      sleepOnsetMinutes: 20,
+      nightWakeMinutes: 10,
+      satisfaction: 3,
+      techniqueIds: ['SC01', 'CR01', 'MR01'],
+      techniqueResponses: { SC01: 'done', CR01: 'failed', MR01: 'na' },
+      records: [],
+      language: 'ja',
+      t: dummyT,
+    });
+    expect(Array.isArray(payload.eligibleFocusActions)).toBe(true);
+    expect(payload.eligibleFocusActions.length).toBeGreaterThan(0);
+  });
+
+  test('not_applicable actions excluded from eligibleFocusActions', () => {
+    const payload = buildDailyInsightPayload({
+      bedtime: new Date('2025-01-10T23:00:00'),
+      wakeTime: new Date('2025-01-11T07:00:00'),
+      sleepOnsetMinutes: 20,
+      nightWakeMinutes: 10,
+      satisfaction: 3,
+      techniqueIds: ['SC01', 'CR01', 'MR01'],
+      techniqueResponses: { SC01: 'na', CR01: 'na', MR01: 'na' },
+      records: [],
+      language: 'ja',
+      t: dummyT,
+    });
+    for (const a of payload.eligibleFocusActions) {
+      expect(a.result).not.toBe('not_applicable');
+    }
+  });
+
+  test('memo still excluded from payload', () => {
+    const payload = buildDailyInsightPayload({
+      bedtime: new Date('2025-01-10T23:00:00'),
+      wakeTime: new Date('2025-01-11T07:00:00'),
+      sleepOnsetMinutes: 20,
+      nightWakeMinutes: 10,
+      satisfaction: 3,
+      techniqueIds: ['SC01'],
+      techniqueResponses: { SC01: 'done' },
+      records: [],
+      language: 'ja',
+      t: dummyT,
+    });
+    const json = JSON.stringify(payload);
+    expect(json).not.toContain('"memo"');
+  });
+});
+
+// ====== 18. CASE 4: not_applicable never recommended ======
+
+describe('eligibleFocusActions — N/A safety', () => {
+  test('all-NA actions still produces eligible list via supplements', () => {
+    const actions = [
+      { id: 'SC03', category: 'stimulus_control', result: 'not_applicable' },
+      { id: 'CR04', category: 'cognitive_restructuring', result: 'not_applicable' },
+      { id: 'SR05', category: 'sleep_restriction', result: 'not_applicable' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'stimulus_control', goodStats());
+    expect(eligible.length).toBeGreaterThan(0);
+    for (const a of eligible) {
+      expect(a.result).not.toBe('not_applicable');
+    }
+  });
+});
+
+// ====== 19. CASE 7: sleep_restriction focus does not prescribe timing ======
+
+describe('eligibleFocusActions — sleep_restriction safety', () => {
+  test('SR actions have behavioral text, not timing prescriptions', () => {
+    const actions = [
+      { id: 'SR01', category: 'sleep_restriction', result: 'not_done' },
+      { id: 'SC01', category: 'stimulus_control', result: 'done' },
+    ];
+    const eligible = buildEligibleFocusActions(actions, 'sleep_restriction', goodStats());
+    const srActions = eligible.filter((a) => a.category === 'sleep_restriction');
+    for (const a of srActions) {
+      expect(a.text).not.toMatch(/\d{1,2}:\d{2}/);
+      expect(a.text).not.toMatch(/\d+ hours/i);
+    }
+  });
+});
+
+// ====== 20. CASE 5: different actions produce different eligible lists ======
+
+describe('eligibleFocusActions — variation', () => {
+  test('different recommendedFocus produces different first action', () => {
+    const actionsA = [
+      { id: 'SC01', category: 'stimulus_control', result: 'not_done' },
+      { id: 'CR01', category: 'cognitive_restructuring', result: 'done' },
+      { id: 'MR01', category: 'mindfulness', result: 'done' },
+    ];
+    const actionsB = [
+      { id: 'SC01', category: 'stimulus_control', result: 'done' },
+      { id: 'CR01', category: 'cognitive_restructuring', result: 'not_done' },
+      { id: 'MR01', category: 'mindfulness', result: 'done' },
+    ];
+    const eligibleA = buildEligibleFocusActions(actionsA, 'stimulus_control', goodStats());
+    const eligibleB = buildEligibleFocusActions(actionsB, 'cognitive_restructuring', goodStats());
+    expect(eligibleA[0].category).not.toBe(eligibleB[0].category);
   });
 });

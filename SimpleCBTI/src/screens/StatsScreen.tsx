@@ -1,3 +1,4 @@
+import { getSleepDisplayDate } from '../utils/time';
 import React, { useState, useMemo, useRef, useCallback } from 'react';
 import {
   View,
@@ -14,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useI18n } from '../i18n';
 import { Translations } from '../i18n/types';
 import { useSleepStore } from '../hooks/useSleepStore';
+import { visibleSleepHistory } from '../services/sleepHistory';
 import { Card } from '../components/Card';
 import { SleepRecord } from '../types/sleep';
 import { calcTimeInBed, calcSleepEfficiency, formatDuration } from '../utils/time';
@@ -34,11 +36,6 @@ interface DayStat {
   efficiency: number;
 }
 
-const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTH_NAMES = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-];
 
 function getMonday(d: Date): Date {
   const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -52,15 +49,27 @@ function dateKey(d: Date): string {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
 }
 
-function formatDateShort(d: Date): string {
-  return `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+function formatDateShort(d: Date, locale: string): string {
+  return d.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
 }
 
-function buildWeekStats(records: SleepRecord[], weekStart: Date): DayStat[] {
+function buildWeekStats(records: SleepRecord[], weekStart: Date, locale: string): DayStat[] {
   const completed = records.filter(
     (r) => r.wakeTime && r.satisfaction !== null,
   );
-  const byDate = new Map(completed.map((r) => [r.date, r]));
+  const byDate = new Map<string, SleepRecord>();
+  for (const r of completed) {
+    if (!r.bedtime || !r.wakeTime) continue;
+    const displayDate = getSleepDisplayDate(r);
+    const existing = byDate.get(displayDate);
+    if (!existing || !existing.bedtime || !existing.wakeTime) {
+      byDate.set(displayDate, r);
+    } else {
+      const existingTib = calcTimeInBed(new Date(existing.bedtime), new Date(existing.wakeTime));
+      const newTib = calcTimeInBed(new Date(r.bedtime), new Date(r.wakeTime));
+      if (newTib > existingTib) byDate.set(displayDate, r);
+    }
+  }
   const result: DayStat[] = [];
 
   for (let i = 0; i < 7; i++) {
@@ -68,8 +77,8 @@ function buildWeekStats(records: SleepRecord[], weekStart: Date): DayStat[] {
     d.setDate(d.getDate() + i);
     const key = dateKey(d);
     const label = `${d.getMonth() + 1}/${d.getDate()}`;
-    const weekday = WEEKDAY_SHORT[d.getDay()];
-    const dateLabel = `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+    const weekday = d.toLocaleDateString(locale, { weekday: 'short' });
+    const dateLabel = formatDateShort(d, locale);
     const r = byDate.get(key);
 
     if (r && r.bedtime && r.wakeTime) {
@@ -126,7 +135,7 @@ function formatDelta(current: number, previous: number, suffix: string): { text:
 
 export function StatsScreen() {
   const insets = useSafeAreaInsets();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { records } = useSleepStore();
 
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
@@ -134,10 +143,9 @@ export function StatsScreen() {
 
   const isCurrent = isCurrentWeek(weekStart);
   const { isPro } = useProStatus();
-
   const stats = useMemo(
-    () => buildWeekStats(records, weekStart),
-    [records, weekStart],
+    () => buildWeekStats(visibleSleepHistory(records, isPro), weekStart, locale),
+    [records, isPro, weekStart, locale],
   );
   const hasData = stats.some((s) => s.timeInBed > 0);
 
@@ -148,8 +156,8 @@ export function StatsScreen() {
   }, [weekStart]);
 
   const prevStats = useMemo(
-    () => buildWeekStats(records, prevWeekStart),
-    [records, prevWeekStart],
+    () => buildWeekStats(visibleSleepHistory(records, isPro), prevWeekStart, locale),
+    [records, isPro, prevWeekStart, locale],
   );
 
   const weekEnd = useMemo(() => {
@@ -202,7 +210,7 @@ export function StatsScreen() {
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setPickerVisible(true)}>
           <Text style={styles.navDateText}>
-            {formatDateShort(weekStart)} – {formatDateShort(weekEnd)}
+            {formatDateShort(weekStart, locale)} – {formatDateShort(weekEnd, locale)}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -379,79 +387,82 @@ function DurationChart({ stats, t }: { stats: DayStat[]; t: Translations }) {
 /* ─── Efficiency: line chart ─── */
 
 function EfficiencyChart({ stats }: { stats: DayStat[] }) {
-  const chartH = 160;
-  const chartW = SCREEN_W - 80;
+  const chartH = 150;
+  const yAxisW = 44;
+  const xAxisH = 36;
+  const cardInnerW = SCREEN_W - 80;
+  const plotW = cardInnerW - yAxisW;
   const validPoints = stats
     .map((s, i) => ({ x: i, eff: s.efficiency, has: s.timeInBed > 0, weekday: s.weekday, dateLabel: s.dateLabel }))
     .filter((p) => p.has);
 
+  const pointX = (i: number) => yAxisW + (i / 6) * (plotW - 8) + 4;
+
   return (
-    <View>
-      <View style={{ width: chartW + 60, height: chartH + 50, alignSelf: 'center' }}>
-        {[0, 25, 50, 75, 100].map((pct) => (
-          <View key={pct} style={[styles.gridLine, { bottom: (pct / 100) * chartH + 30 }]}>
-            <Text style={styles.gridLabel}>{pct}%</Text>
-          </View>
-        ))}
+    <View style={{ width: cardInnerW, height: chartH + xAxisH }}>
+      {[0, 25, 50, 75, 100].map((pct) => (
+        <View key={pct} style={[styles.gridLine, { bottom: (pct / 100) * chartH + xAxisH, left: yAxisW }]}>
+          <Text style={[styles.gridLabel, { left: -yAxisW, width: yAxisW - 4 }]}>{pct}%</Text>
+        </View>
+      ))}
 
-        <View style={[styles.lineChartArea, { height: chartH }]}>
-          {validPoints.map((p, idx) => {
-            if (idx === 0) return null;
-            const prev = validPoints[idx - 1];
-            const x1 = 40 + (prev.x / 6) * (chartW - 20);
-            const y1 = chartH - (prev.eff / 100) * chartH;
-            const x2 = 40 + (p.x / 6) * (chartW - 20);
-            const y2 = chartH - (p.eff / 100) * chartH;
-            const dx = x2 - x1;
-            const dy = y2 - y1;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-            return (
-              <View
-                key={`line-${idx}`}
-                style={{
-                  position: 'absolute',
-                  left: x1,
-                  top: y1,
-                  width: len,
-                  height: 2,
+      <View style={[styles.lineChartArea, { height: chartH, left: 0, right: 0, top: 0 }]}>
+        {validPoints.map((p, idx) => {
+          if (idx === 0) return null;
+          const prev = validPoints[idx - 1];
+          const x1 = pointX(prev.x);
+          const y1 = chartH - (prev.eff / 100) * chartH;
+          const x2 = pointX(p.x);
+          const y2 = chartH - (p.eff / 100) * chartH;
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+          return (
+            <View
+              key={`line-${idx}`}
+              style={{
+                position: 'absolute',
+                left: x1,
+                top: y1,
+                width: len,
+                height: 3,
+                backgroundColor: Colors.brightGreen,
+                transform: [{ rotate: `${angle}deg` }],
+                transformOrigin: 'left center',
+              }}
+            />
+          );
+        })}
+
+        {validPoints.map((p, idx) => {
+          const x = pointX(p.x);
+          const y = chartH - (p.eff / 100) * chartH;
+          return (
+            <View
+              key={idx}
+              style={[
+                styles.lineDot,
+                {
+                  left: x - 5,
+                  top: y - 5,
                   backgroundColor: Colors.brightGreen,
-                  transform: [{ rotate: `${angle}deg` }],
-                  transformOrigin: 'left center',
-                }}
-              />
-            );
-          })}
+                },
+              ]}
+            />
+          );
+        })}
+      </View>
 
-          {validPoints.map((p, idx) => {
-            const x = 40 + (p.x / 6) * (chartW - 20);
-            const y = chartH - (p.eff / 100) * chartH;
-            return (
-              <View
-                key={idx}
-                style={[
-                  styles.lineDot,
-                  {
-                    left: x - 5,
-                    top: y - 5,
-                    backgroundColor: Colors.brightGreen,
-                  },
-                ]}
-              />
-            );
-          })}
-        </View>
-
-        <View style={styles.xAxisLine}>
-          {stats.map((s, i) => {
-            const x = 40 + (i / 6) * (chartW - 20);
-            return (
-              <View key={i} style={{ position: 'absolute', left: x - 16, alignItems: 'center' }}>
-                <Text style={styles.xLabelAbs}>{s.dateLabel}</Text>
-              </View>
-            );
-          })}
-        </View>
+      <View style={[styles.xAxisLine, { height: xAxisH, left: 0, right: 0 }]}>
+        {stats.map((s, i) => {
+          const x = pointX(i);
+          return (
+            <View key={i} style={{ position: 'absolute', left: x - 18, width: 36, top: 8, alignItems: 'center' }}>
+              <Text style={styles.xLabelAbs}>{s.dateLabel}</Text>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
@@ -472,6 +483,7 @@ function MonthPickerModal({
   onClose: () => void;
   t: Translations;
 }) {
+  const { locale } = useI18n();
   const [viewDate, setViewDate] = useState(() => new Date(currentWeekStart));
 
   const navigateMonth = (dir: -1 | 1) => {
@@ -508,7 +520,7 @@ function MonthPickerModal({
               <Text style={styles.pickerArrow}>‹</Text>
             </TouchableOpacity>
             <Text style={styles.pickerTitle}>
-              {MONTH_NAMES[viewDate.getMonth()]} {viewDate.getFullYear()}
+              {viewDate.toLocaleDateString(locale, { year: 'numeric', month: 'long' })}
             </Text>
             <TouchableOpacity onPress={() => navigateMonth(1)}>
               <Text style={styles.pickerArrow}>›</Text>
@@ -537,7 +549,7 @@ function MonthPickerModal({
                   isSelected && styles.weekRowTextSelected,
                   isFuture && styles.weekRowTextDisabled,
                 ]}>
-                  {formatDateShort(monday)} – {formatDateShort(sunday)}
+                  {formatDateShort(monday, locale)} – {formatDateShort(sunday, locale)}
                 </Text>
               </TouchableOpacity>
             );
@@ -766,8 +778,8 @@ const styles = StyleSheet.create({
   yLabel: {
     position: 'absolute',
     left: 0,
-    fontSize: 9,
-    color: Colors.textTertiary,
+    fontSize: 10,
+    color: Colors.textSecondary,
   },
   barsContainer: {
     flexDirection: 'row',
@@ -800,14 +812,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   xDateLabel: {
-    fontSize: 7,
-    color: Colors.textTertiary,
+    fontSize: 8,
+    color: Colors.textSecondary,
   },
 
   // Line chart
   lineChartArea: {
-    position: 'relative',
-    marginTop: 10,
+    position: 'absolute',
   },
   lineDot: {
     position: 'absolute',
@@ -817,26 +828,24 @@ const styles = StyleSheet.create({
   },
   gridLine: {
     position: 'absolute',
-    left: 36,
     right: 0,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: Colors.lavenderLight,
-    flexDirection: 'row',
-    alignItems: 'center',
+    height: 1,
+    backgroundColor: Colors.blueGreyLight,
   },
   gridLabel: {
     position: 'absolute',
-    left: -32,
-    fontSize: 9,
-    color: Colors.textTertiary,
+    top: -6,
+    fontSize: 10,
+    color: Colors.textSecondary,
+    textAlign: 'left',
   },
   xAxisLine: {
-    height: 20,
-    position: 'relative',
+    position: 'absolute',
+    bottom: 0,
   },
   xLabelAbs: {
-    fontSize: 8,
-    color: Colors.textTertiary,
+    fontSize: 9,
+    color: Colors.textSecondary,
     textAlign: 'center',
   },
 

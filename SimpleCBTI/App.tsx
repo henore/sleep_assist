@@ -1,5 +1,6 @@
 import React from 'react';
 import { StatusBar } from 'expo-status-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -102,6 +103,7 @@ export default function App() {
       <I18nProvider>
         <NavigationContainer>
           <StatusBar style="dark" />
+          <NavigationBar hidden />
           <AppNavigator />
         </NavigationContainer>
       </I18nProvider>

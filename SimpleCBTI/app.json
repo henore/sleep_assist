@@ -2,7 +2,7 @@
   "expo": {
     "name": "SimpleCBTI",
     "slug": "SimpleCBTI",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -17,13 +17,20 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.henor.simplecbti"
+      "package": "com.henor.simplecbti",
+      "versionCode": 3
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-localization"
-    ]
+      "expo-localization",
+      "expo-sharing"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7d33dd5e-4e65-4b31-9e98-15d368c597aa"
+      }
+    }
   }
 }

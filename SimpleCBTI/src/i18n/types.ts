@@ -1,4 +1,16 @@
+import moreEnglish from './more/en.json';
+
 export interface Translations {
+  validationTechnique: string;
+  validationMinutes: string;
+  validationSatisfaction: string;
+  moreCopy: typeof moreEnglish;
+  invalidDate: string;
+  invalidTime: string;
+  tapToEdit: string;
+  storageLoadError: string;
+  storageOperationError: string;
+  confirmAction: string;
   // Tabs
   tabDailyInsight: string;
   tabHistory: string;
@@ -7,6 +19,9 @@ export interface Translations {
 
   // Header
   headerDailyInsight: string;
+  dailyInsightCardTitle: string;
+  dailyInsightAttribution: string;
+  dailyInsightGenerating: string;
 
   // Idle
   bedtime: string;
@@ -73,6 +88,7 @@ export interface Translations {
   detailMemo: string;
   detailTechniques: string;
   detailInsight: string;
+  detailTotalSleep: string;
   noMemo: string;
 
   // Stats
@@ -185,6 +201,24 @@ export interface Translations {
   moreRestorePurchases: string;
   moreManageSubscription: string;
   moreAbout: string;
+  moreLanguage: string;
+  moreBackup: string;
+  moreBackupDesc: string;
+  moreImport: string;
+  moreImportDesc: string;
+  backupWarning: string;
+  backupCreated: string;
+  backupFailed: string;
+  importInvalid: string;
+  importConfirm: string;
+  importPeriod: string;
+  importRecordCount: string;
+  importInsightCount: string;
+  importButton: string;
+  importCancel: string;
+  importSuccess: string;
+  importFailed: string;
+  importVersionError: string;
   proCardDesc: string;
   proCardActive: string;
   proCardViewPlans: string;
@@ -196,9 +230,15 @@ export interface Translations {
   insightSatisfactionHigh: string;
   insightSatisfactionLow: string;
   insightLongTimeInBed: string;
+  insightFocusSuggestion: string;
+
+  // Insight translation
+  translateInsight: string;
+  translating: string;
+  translateFailed: string;
 }
 
-export type TranslationKey = keyof Translations;
+export type TranslationKey = Exclude<keyof Translations, 'moreCopy'>;
 
 export type SupportedLocale =
   | 'en' | 'ja' | 'zh-Hans' | 'zh-Hant'

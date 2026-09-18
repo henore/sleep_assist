@@ -1,3 +1,4 @@
+import { getSleepDisplayDate } from '../utils/time';
 import React, { useState, useMemo } from 'react';
 import {
   View,
@@ -6,29 +7,31 @@ import {
   FlatList,
   TouchableOpacity,
   Modal,
-  Pressable,
   ScrollView,
   Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useI18n } from '../i18n';
 import { useSleepStore } from '../hooks/useSleepStore';
+import { sessionKey } from '../services/sleepStore';
+import { visibleSleepHistory } from '../services/sleepHistory';
 import { useProStatus } from '../hooks/useProStatus';
 import { Card } from '../components/Card';
 import { StarRating } from '../components/StarRating';
+import { SleepDayContent, SleepDayData } from '../components/SleepDayContent';
 import { SleepRecord } from '../types/sleep';
 import { calcTimeInBed, calcSleepEfficiency, formatDuration, formatTime } from '../utils/time';
 import { Colors, FontSize, FontWeight, Spacing, BorderRadius } from '../constants/theme';
 import { Translations } from '../i18n/types';
 
-const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 interface RecordDetail {
+  sessionKey: string;
   date: string;
   bedtimeStr: string;
   wakeTimeStr: string;
   durationStr: string;
+  totalSleepStr: string;
   efficiency: number;
   satisfaction: number;
   sleepOnsetMinutes: number | null;
@@ -36,6 +39,7 @@ interface RecordDetail {
   memo: string;
   insight: string;
   insightTitle: string;
+  insightSource?: SleepRecord['insightSource'];
   techniques: string[];
   techniqueResponses: Record<string, import('../types/sleep').TechniqueResponse>;
 }
@@ -45,12 +49,17 @@ function buildDetail(r: SleepRecord): RecordDetail | null {
   const bed = new Date(r.bedtime);
   const wake = new Date(r.wakeTime);
   const tib = calcTimeInBed(bed, wake);
-  const eff = calcSleepEfficiency(tib, r.sleepOnsetMinutes ?? 0, r.nightWakeMinutes ?? 0);
+  const sol = r.sleepOnsetMinutes ?? 0;
+  const waso = r.nightWakeMinutes ?? 0;
+  const eff = calcSleepEfficiency(tib, sol, waso);
+  const totalSleepMin = Math.max(0, tib - sol - waso);
   return {
-    date: r.date,
+    sessionKey: sessionKey(r),
+    date: getSleepDisplayDate(r),
     bedtimeStr: formatTime(bed),
     wakeTimeStr: formatTime(wake),
     durationStr: formatDuration(tib),
+    totalSleepStr: formatDuration(totalSleepMin),
     efficiency: eff,
     satisfaction: r.satisfaction,
     sleepOnsetMinutes: r.sleepOnsetMinutes,
@@ -58,25 +67,22 @@ function buildDetail(r: SleepRecord): RecordDetail | null {
     memo: r.memo,
     insight: r.insight,
     insightTitle: r.insightTitle ?? '',
+    insightSource: r.insightSource,
     techniques: r.techniques,
     techniqueResponses: r.techniqueResponses,
   };
 }
 
-function parseDateParts(dateStr: string) {
+function parseDateParts(dateStr: string, locale: string) {
   const [y, m, d] = dateStr.split('-');
   const date = new Date(Number(y), Number(m) - 1, Number(d));
   return {
-    month: MONTH_SHORT[date.getMonth()],
+    month: date.toLocaleDateString(locale, { month: 'short' }),
     day: date.getDate(),
-    weekday: WEEKDAY_SHORT[date.getDay()],
+    weekday: date.toLocaleDateString(locale, { weekday: 'short' }),
+    shortDate: date.toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
+    fullDate: date.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' }),
   };
-}
-
-function cutoffDate(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 7);
-  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
 }
 
 export function HistoryScreen() {
@@ -90,14 +96,13 @@ export function HistoryScreen() {
     () =>
       records
         .filter((r) => r.wakeTime && r.satisfaction !== null)
-        .sort((a, b) => b.date.localeCompare(a.date)),
+        .sort((a, b) => getSleepDisplayDate(b).localeCompare(getSleepDisplayDate(a))),
     [records],
   );
 
-  const cutoff = cutoffDate();
   const completed = useMemo(
-    () => (isPro ? allCompleted : allCompleted.filter((r) => r.date >= cutoff)),
-    [allCompleted, isPro, cutoff],
+    () => visibleSleepHistory(allCompleted, isPro),
+    [allCompleted, isPro],
   );
   const hasOlderRecords = !isPro && allCompleted.length > completed.length;
 
@@ -116,8 +121,9 @@ export function HistoryScreen() {
       <Text style={styles.subtitle}>{t.historySubtitle}</Text>
       <FlatList
         data={completed}
-        keyExtractor={(item) => item.date}
+        keyExtractor={sessionKey}
         contentContainerStyle={styles.list}
+        style={{ flex: 1 }}
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => {
           const detail = buildDetail(item);
@@ -161,7 +167,8 @@ export function HistoryScreen() {
 /* ─── Compact list card (matches reference image) ─── */
 
 function HistoryCard({ data, t }: { data: RecordDetail; t: Translations }) {
-  const dp = parseDateParts(data.date);
+  const { locale } = useI18n();
+  const dp = parseDateParts(data.date, locale);
   const effColor =
     data.efficiency >= 85
       ? Colors.brightGreen
@@ -174,7 +181,7 @@ function HistoryCard({ data, t }: { data: RecordDetail; t: Translations }) {
       {/* Top row: date + moon + bedtime / wake / time in bed */}
       <View style={styles.topRow}>
         <View style={styles.dateCol}>
-          <Text style={styles.dateMain}>{dp.month} {dp.day}</Text>
+          <Text style={styles.dateMain}>{dp.shortDate}</Text>
           <Text style={styles.dateSub}>{dp.weekday}</Text>
         </View>
         <View style={styles.moonCircle}>
@@ -194,25 +201,27 @@ function HistoryCard({ data, t }: { data: RecordDetail; t: Translations }) {
         </View>
       </View>
 
-      {/* Bottom rows: efficiency + stars, then insight */}
+      {/* Bottom rows: total sleep + efficiency + stars, then insight */}
       <View style={styles.bottomRow}>
+        <Text style={styles.effLabel}>{t.detailTotalSleep}</Text>
+        <Text style={styles.totalSleepValue}>{data.totalSleepStr}</Text>
+        <Text style={styles.effDivider}>|</Text>
         <Text style={styles.effLabel}>{t.sleepEfficiency}</Text>
         <Text style={[styles.effValue, { color: effColor }]}>{data.efficiency}%</Text>
-        <View style={{ flex: 1 }} />
-        <StarRating value={data.satisfaction} readonly size={14} />
       </View>
-      {data.insight ? (
-        <View style={styles.insightRow}>
-          <Text style={styles.insightIndicator}>📝 {t.dailyInsightSaved}</Text>
-          <View style={{ flex: 1 }} />
-          <Text style={styles.chevron}>›</Text>
-        </View>
-      ) : (
-        <View style={styles.insightRow}>
-          <View style={{ flex: 1 }} />
-          <Text style={styles.chevron}>›</Text>
-        </View>
-      )}
+      <View style={styles.insightRow}>
+        <StarRating value={data.satisfaction} readonly size={14} />
+        {data.techniques.length > 0 && (
+          <Text style={[styles.insightIndicator, { marginLeft: Spacing.sm }]}>🧠 {t.detailTechniques}</Text>
+        )}
+        {data.insight ? (
+          <Text style={[styles.insightIndicator, { marginLeft: Spacing.sm }]}>
+            📝 {t.dailyInsightSaved}
+          </Text>
+        ) : null}
+        <View style={{ flex: 1 }} />
+        <Text style={styles.chevron}>›</Text>
+      </View>
     </Card>
   );
 }
@@ -230,8 +239,9 @@ function HistoryDetailModal({
   onDelete: (dateKey: string) => void;
   t: Translations;
 }) {
-  const dp = parseDateParts(data.date);
-  const dateStr = `${dp.weekday}, ${dp.month} ${dp.day}`;
+  const { locale } = useI18n();
+  const dp = parseDateParts(data.date, locale);
+  const dateStr = dp.fullDate;
 
   const effColor =
     data.efficiency >= 85
@@ -244,7 +254,7 @@ function HistoryDetailModal({
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalContainer}>
         <View style={styles.modalContent}>
-          <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+          <ScrollView showsVerticalScrollIndicator={true} style={styles.modalScroll}>
             {/* Date header */}
             <View style={styles.detailHeader}>
               <View style={styles.detailMoon}>
@@ -254,9 +264,6 @@ function HistoryDetailModal({
                 <Text style={styles.detailDateMain}>{dp.month} {dp.day}</Text>
                 <Text style={styles.detailDateSub}>{dateStr}</Text>
               </View>
-              <TouchableOpacity style={styles.closeX} onPress={onClose}>
-                <Text style={styles.closeXText}>✕</Text>
-              </TouchableOpacity>
             </View>
 
             {/* Bedtime / Wake time 2-column (same as CompletedView) */}
@@ -273,7 +280,7 @@ function HistoryDetailModal({
               </View>
             </View>
 
-            {/* Efficiency ring (same as CompletedView) */}
+            {/* Efficiency ring */}
             <View style={styles.detailSection}>
               <View style={styles.detailEffRow}>
                 <View style={[styles.detailEffRing, { borderColor: effColor }]}>
@@ -281,57 +288,19 @@ function HistoryDetailModal({
                 </View>
                 <View style={styles.detailEffInfo}>
                   <Text style={styles.detailEffLabel}>{t.sleepEfficiency}</Text>
-                  <Text style={styles.detailEffDetail}>{data.durationStr} {t.asleep}</Text>
+                  <Text style={styles.detailEffDetail}>{data.durationStr} {t.inBed}</Text>
                 </View>
               </View>
             </View>
 
-            {/* Sleep onset / Night wake details */}
-            {(data.sleepOnsetMinutes != null || data.nightWakeMinutes != null) && (
-              <View style={styles.detailSection}>
-                {data.sleepOnsetMinutes != null && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailRowLabel}>{t.detailSleepOnset}</Text>
-                    <Text style={styles.detailRowValue}>{data.sleepOnsetMinutes} {t.minutes}</Text>
-                  </View>
-                )}
-                {data.nightWakeMinutes != null && (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailRowLabel}>{t.detailNightWake}</Text>
-                    <Text style={styles.detailRowValue}>{data.nightWakeMinutes} {t.minutes}</Text>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {/* Satisfaction stars (same as CompletedView) */}
-            <View style={styles.detailSection}>
-              <Text style={styles.detailSatLabel}>{t.satisfactionLabel}</Text>
-              <View style={styles.detailStarsRow}>
-                <StarRating value={data.satisfaction} readonly size={28} />
-              </View>
-            </View>
-
-            {/* Memo */}
-            {data.memo ? (
-              <View style={styles.detailSection}>
-                <Text style={styles.detailSectionLabel}>{t.detailMemo}</Text>
-                <Text style={styles.detailMemoText}>{data.memo}</Text>
-              </View>
-            ) : null}
-
-            {/* AI Insight (same style as CompletedView InsightCard) */}
-            {data.insight ? (
-              <View style={styles.detailInsightCard}>
-                <View style={styles.detailInsightHeader}>
-                  <Text style={styles.detailInsightIcon}>💡</Text>
-                  <Text style={styles.detailInsightTitle}>
-                    {data.insightTitle || t.todaysInsight}
-                  </Text>
-                </View>
-                <Text style={styles.detailInsightText}>{data.insight}</Text>
-              </View>
-            ) : null}
+            {/* Shared content: SOL, WASO, total sleep, satisfaction, techniques, memo, insight */}
+            <SleepDayContent
+              data={{
+                ...data,
+                techniqueIds: data.techniques,
+              }}
+              t={t}
+            />
 
             {/* Delete button */}
             <TouchableOpacity
@@ -345,7 +314,7 @@ function HistoryDetailModal({
                     {
                       text: t.deleteRecord,
                       style: 'destructive',
-                      onPress: () => onDelete(data.date),
+                      onPress: () => onDelete(data.sessionKey),
                     },
                   ],
                 );
@@ -354,13 +323,13 @@ function HistoryDetailModal({
               <Text style={styles.deleteBtnText}>{t.deleteRecord}</Text>
             </TouchableOpacity>
 
-            {/* Close button */}
-            <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
-              <Text style={styles.closeBtnText}>{t.close}</Text>
-            </TouchableOpacity>
-
-            <View style={{ height: Spacing.lg }} />
+            <View style={{ height: Spacing.sm }} />
           </ScrollView>
+
+          {/* Fixed close button at bottom */}
+          <TouchableOpacity style={styles.fixedCloseBtn} onPress={onClose}>
+            <Text style={styles.fixedCloseBtnText}>{t.close}</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -468,6 +437,17 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textTertiary,
   },
+  totalSleepValue: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+    marginLeft: 2,
+  },
+  effDivider: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginHorizontal: 4,
+  },
   effValue: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.bold,
@@ -518,7 +498,6 @@ const styles = StyleSheet.create({
   modalContainer: {
     flex: 1,
     backgroundColor: Colors.overlay,
-    justifyContent: 'center',
     alignItems: 'center',
     padding: Spacing.md,
   },
@@ -527,8 +506,12 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     width: '100%',
     maxWidth: 400,
-    maxHeight: '90%',
+    flex: 1,
+    marginVertical: 40,
     overflow: 'hidden',
+  },
+  modalScroll: {
+    flex: 1,
   },
 
   detailHeader: {
@@ -556,18 +539,16 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textSecondary,
   },
-  closeX: {
-    marginLeft: 'auto',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.lavenderLight,
-    justifyContent: 'center',
+  fixedCloseBtn: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.lavenderLight,
+    paddingVertical: Spacing.md,
     alignItems: 'center',
   },
-  closeXText: {
+  fixedCloseBtnText: {
     fontSize: FontSize.md,
-    color: Colors.textSecondary,
+    fontWeight: FontWeight.semibold,
+    color: Colors.lavenderDark,
   },
 
   detailTwoCol: {
@@ -642,70 +623,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: Spacing.xs,
-  },
-  detailRowLabel: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-  },
-  detailRowValue: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.textPrimary,
-  },
-
-  detailSatLabel: {
-    fontSize: FontSize.sm,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.sm,
-  },
-  detailStarsRow: {
-    alignItems: 'center',
-  },
-
-  detailSectionLabel: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.medium,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.xs,
-  },
-  detailMemoText: {
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    lineHeight: 22,
-  },
-
-  detailInsightCard: {
-    marginHorizontal: Spacing.md,
-    backgroundColor: Colors.lavenderLight,
-    borderRadius: BorderRadius.sm,
-    padding: Spacing.md,
-    marginTop: Spacing.sm,
-  },
-  detailInsightHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
-  detailInsightIcon: {
-    fontSize: 18,
-    marginRight: Spacing.xs,
-  },
-  detailInsightTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.lavenderDark,
-  },
-  detailInsightText: {
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    lineHeight: 22,
-  },
-
   deleteBtn: {
     marginTop: Spacing.lg,
     alignItems: 'center',
@@ -715,16 +632,6 @@ const styles = StyleSheet.create({
   deleteBtnText: {
     fontSize: FontSize.sm,
     color: '#C45B5B',
-    fontWeight: FontWeight.medium,
-  },
-  closeBtn: {
-    alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    marginHorizontal: Spacing.md,
-  },
-  closeBtnText: {
-    fontSize: FontSize.md,
-    color: Colors.lavenderDark,
     fontWeight: FontWeight.medium,
   },
 });

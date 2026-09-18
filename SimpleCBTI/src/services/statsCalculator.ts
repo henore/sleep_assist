@@ -16,10 +16,11 @@ interface DayMetrics {
   wakeMinOfDay: number;
 }
 
-function extractMetrics(r: SleepRecord): DayMetrics | null {
+export function extractMetrics(r: SleepRecord): DayMetrics | null {
   if (!r.bedtime || !r.wakeTime || r.satisfaction === null) return null;
   const bed = new Date(r.bedtime);
   const wake = new Date(r.wakeTime);
+  if (!Number.isFinite(bed.getTime()) || !Number.isFinite(wake.getTime()) || wake <= bed) return null;
   const tib = calcTimeInBed(bed, wake);
   const onset = r.sleepOnsetMinutes ?? 0;
   const waso = r.nightWakeMinutes ?? 0;
@@ -77,6 +78,15 @@ export function calculate7dStats(records: SleepRecord[]): Stats7d {
     .filter((r) => r.date >= cutoffKey)
     .sort((a, b) => a.date.localeCompare(b.date));
 
+  return calculateSessionStats(recent);
+}
+
+// Input is already selected. Daily Insight uses seven completed sessions,
+// while the legacy calendar-based caller retains its existing window.
+export function calculateSessionStats(records: SleepRecord[], minTrendSamples = MIN_DAYS_FOR_TREND): Stats7d {
+  const recent = [...records].sort((a, b) => a.date.localeCompare(b.date));
+  const sessionTrend = (values: number[], inverse = false): TrendDirection =>
+    values.length < minTrendSamples ? 'insufficient_data' : inverse ? trendInverse(values) : trend(values);
   const metrics = recent.map(extractMetrics).filter((m): m is DayMetrics => m !== null);
 
   if (metrics.length === 0) {
@@ -106,10 +116,29 @@ export function calculate7dStats(records: SleepRecord[]): Stats7d {
     avgSleepOnsetLatencyMin: Math.round(avg(metrics.map((m) => m.onsetMin))),
     avgWakeAfterSleepOnsetMin: Math.round(avg(metrics.map((m) => m.wasoMin))),
     avgSatisfaction: avg(metrics.map((m) => m.satisfaction)),
-    sleepEfficiencyTrend: trend(metrics.map((m) => m.efficiencyPct)),
-    sleepOnsetTrend: trendInverse(metrics.map((m) => m.onsetMin)),
-    wakeAfterSleepOnsetTrend: trendInverse(metrics.map((m) => m.wasoMin)),
-    sleepDurationTrend: trend(metrics.map((m) => m.totalSleepMin)),
+    sleepEfficiencyTrend: sessionTrend(metrics.map((m) => m.efficiencyPct)),
+    sleepOnsetTrend: sessionTrend(metrics.map((m) => m.onsetMin), true),
+    wakeAfterSleepOnsetTrend: sessionTrend(metrics.map((m) => m.wasoMin), true),
+    sleepDurationTrend: sessionTrend(metrics.map((m) => m.totalSleepMin)),
     wakeTimeConsistency: wakeConsistency(metrics.map((m) => m.wakeMinOfDay)),
   };
+}
+
+// date and array order are stable across edits; bedtime/wakeTime are not.
+// Stored sessions are appended at Bedtime and edits never reorder that array.
+export function getPreviousCompletedSessions(
+  current: Pick<SleepRecord, 'id' | 'date'>, all: SleepRecord[], limit = 7,
+): SleepRecord[] {
+  const now = new Date();
+  const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+  const sameSession = (r: SleepRecord) => current.id ? r.id === current.id : r.date === current.date;
+  const currentIndex = all.findIndex(sameSession);
+  return all.map((record, index) => ({ record, index }))
+    .filter(({ record: r, index }) => !sameSession(r)
+      && (r.date < current.date || (r.date === current.date && currentIndex >= 0 && index < currentIndex))
+      && r.date <= today && !!extractMetrics(r)
+      && Date.parse(r.bedtime!) <= now.getTime() && Date.parse(r.wakeTime!) <= now.getTime())
+    .sort((a, b) => b.record.date.localeCompare(a.record.date) || b.index - a.index)
+    .slice(0, Math.max(0, Math.floor(limit)))
+    .map(({ record }) => record);
 }

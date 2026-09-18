@@ -7,6 +7,7 @@ export type DayPhase =
 export type TechniqueResponse = 'done' | 'na' | 'failed';
 
 export interface SleepRecord {
+  id?: string;
   date: string;
   bedtime: string | null;
   wakeTime: string | null;
@@ -19,6 +20,10 @@ export interface SleepRecord {
   insight: string;
   insightTitle: string;
   insightFocusId: string;
+  insightSource?: InsightSource;
+  insightModel?: string;
+  insightPromptVersion?: string;
+  insightLocale?: string;
 }
 
 export type TrendDirection = 'improving' | 'stable' | 'worsening' | 'insufficient_data';
@@ -60,10 +65,16 @@ export interface RuleEngineResult {
   questionWeights: QuestionWeights;
 }
 
+export type InsightSource = 'openai' | 'fallback';
+
 export interface InsightResult {
   title: string;
   message: string;
   focusActionId: string;
+  source: InsightSource;
+  model?: string;
+  promptVersion?: string;
+  locale?: string;
 }
 
 export interface CheckInData {

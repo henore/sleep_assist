@@ -19,8 +19,8 @@ export const Colors = {
   brightGreenLight: '#E0F5ED',
 
   textPrimary: '#3A3550',
-  textSecondary: '#7B7592',
-  textTertiary: '#A9A4BC',
+  textSecondary: '#4A4560',
+  textTertiary: '#6B6580',
 
   star: '#F0C14D',
   starEmpty: '#E8E2F0',
@@ -63,4 +63,8 @@ export const FontWeight = {
   medium: '500' as const,
   semibold: '600' as const,
   bold: '700' as const,
+};
+
+export const Layout = {
+  maxContentWidth: 600,
 };

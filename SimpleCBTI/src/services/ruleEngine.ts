@@ -1,5 +1,6 @@
-import { Stats7d, TechniqueResponse, RuleEngineResult, FocusCategory, QuestionWeights } from '../types/sleep';
+import { SleepRecord, Stats7d, TechniqueResponse, RuleEngineResult, FocusCategory, QuestionWeights } from '../types/sleep';
 import { TechniqueCategory } from '../constants/techniques';
+import { extractMetrics } from './statsCalculator';
 
 // --- Thresholds (named constants) ---
 
@@ -48,6 +49,9 @@ export const ATTENTION_SIGNALS = {
   WASO_HIGH: 'wake_after_sleep_onset_high',
   WASO_HIGHER_THAN_USUAL: 'wake_after_sleep_onset_higher_than_usual',
   LOW_EFFICIENCY: 'low_efficiency',
+  REPEATED_LOW_EFFICIENCY: 'repeated_low_efficiency',
+  REPEATED_LONG_ONSET: 'repeated_long_sleep_onset',
+  REPEATED_HIGH_WASO: 'repeated_high_wake_after_sleep_onset',
   WAKE_TIME_INCONSISTENT: 'wake_time_inconsistent',
   SR_NOT_COMPLETED: 'sleep_restriction_not_completed',
   SC_NOT_COMPLETED: 'stimulus_control_not_completed',
@@ -86,9 +90,25 @@ export function evaluateSleepSession(
   today: TodayMetrics,
   actions: ActionEntry[],
   stats: Stats7d,
+  previousSessions: SleepRecord[] = [], // newest first; excludes current session
 ): RuleEngineResult {
   const positive = detectPositiveSignals(today, actions, stats);
   const attention = detectAttentionSignals(today, actions, stats);
+  // Two past observations are required, even when today is already above a threshold.
+  const recent = previousSessions.slice(0, 2).map(extractMetrics).filter((m) => m !== null);
+  if (recent.length === 2) {
+    const repeats = (todayMatches: boolean, previousMatches: boolean[]) =>
+      Number(todayMatches) + previousMatches.filter(Boolean).length >= 2;
+    if (repeats(today.sleepEfficiencyPct < LOW_EFFICIENCY_PCT, recent.map((m) => m.efficiencyPct < LOW_EFFICIENCY_PCT))) {
+      attention.push(ATTENTION_SIGNALS.REPEATED_LOW_EFFICIENCY);
+    }
+    if (repeats(today.sleepOnsetMin > SLEEP_ONSET_LONG_MIN, recent.map((m) => m.onsetMin > SLEEP_ONSET_LONG_MIN))) {
+      attention.push(ATTENTION_SIGNALS.REPEATED_LONG_ONSET);
+    }
+    if (repeats(today.wasoMin > WASO_HIGH_MIN, recent.map((m) => m.wasoMin > WASO_HIGH_MIN))) {
+      attention.push(ATTENTION_SIGNALS.REPEATED_HIGH_WASO);
+    }
+  }
   const recommendedFocus = determineRecommendedFocus(today, attention, stats);
   const questionWeights = computeQuestionWeights(today, stats);
   return { positiveSignals: positive, attentionSignals: attention, recommendedFocus, questionWeights };
@@ -198,17 +218,17 @@ function determineRecommendedFocus(
 
   if (has(ATTENTION_SIGNALS.WAKE_TIME_INCONSISTENT)) return 'sleep_restriction';
 
-  if (has(ATTENTION_SIGNALS.ONSET_LONG) || has(ATTENTION_SIGNALS.ONSET_LONGER_THAN_USUAL)) {
+  if (has(ATTENTION_SIGNALS.REPEATED_LONG_ONSET)) {
     return 'stimulus_control';
   }
 
-  if (has(ATTENTION_SIGNALS.WASO_HIGH) || has(ATTENTION_SIGNALS.WASO_HIGHER_THAN_USUAL)) {
+  if (has(ATTENTION_SIGNALS.REPEATED_HIGH_WASO)) {
     return 'stimulus_control';
   }
 
   if (has(ATTENTION_SIGNALS.LOW_SATISFACTION_GOOD_EFFICIENCY)) return 'cognitive_restructuring';
 
-  if (has(ATTENTION_SIGNALS.LOW_EFFICIENCY)) return 'stimulus_control';
+  if (has(ATTENTION_SIGNALS.REPEATED_LOW_EFFICIENCY)) return 'stimulus_control';
 
   const failedCategories = attentionSignals
     .filter((s) => s.endsWith('_not_completed'))

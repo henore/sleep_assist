@@ -9,8 +9,9 @@ export function calcTimeInBed(bedtime: Date, wakeTime: Date): number {
 }
 
 export function formatDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
+  const total = Math.round(minutes);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
   return `${h}h ${m.toString().padStart(2, '0')}m`;
 }
 
@@ -27,4 +28,12 @@ export function calcSleepEfficiency(
 export function getTodayKey(): string {
   const d = new Date();
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+}
+
+// Display/grouping date follows the edited bedtime. record.date remains the
+// original session identity/comparison anchor, including for legacy records.
+export function getSleepDisplayDate(record: { bedtime: string | null; date: string }): string {
+  const date = record.bedtime ? new Date(record.bedtime) : null;
+  if (!date || !Number.isFinite(date.getTime())) return record.date;
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 }

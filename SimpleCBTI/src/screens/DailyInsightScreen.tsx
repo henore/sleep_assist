@@ -8,17 +8,22 @@ import {
   TextInput,
   Animated,
   TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+  Keyboard,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Card } from '../components/Card';
 import { StarRating } from '../components/StarRating';
-import { SleepDetailOverlay } from '../components/SleepDetailOverlay';
+import { SleepDayContent } from '../components/SleepDayContent';
 import { useSleepStore } from '../hooks/useSleepStore';
 import { useProStatus } from '../hooks/useProStatus';
-import { useTypewriter } from '../hooks/useTypewriter';
+import { InsightCard } from '../components/InsightCard';
+import { sessionKey } from '../services/sleepStore';
 import { useI18n } from '../i18n';
 import { Translations } from '../i18n/types';
+import { buildTemplateInsight } from '../services/insightApi';
 import { TECHNIQUE_DEFS } from '../constants/techniques';
 import { TechniqueResponse } from '../types/sleep';
 import { Colors, FontSize, FontWeight, Spacing, BorderRadius } from '../constants/theme';
@@ -26,25 +31,41 @@ import { formatTime, formatDuration } from '../utils/time';
 import { CheckInData } from '../types/sleep';
 
 export function DailyInsightScreen() {
+  const scrollRef = useRef<ScrollView>(null);
   const insets = useSafeAreaInsets();
   const store = useSleepStore();
   const { t, locale } = useI18n();
   const { today } = store;
   const { isPro } = useProStatus();
 
+  if (!store.isHydrated) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        {store.storageError
+          ? <Text accessibilityRole="alert">{t.storageLoadError}</Text>
+          : <ActivityIndicator />}
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <ScrollView
+        ref={scrollRef}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
       >
+        {store.storageError && (
+          <Text accessibilityRole="alert">{t.storageOperationError}</Text>
+        )}
         {today.phase === 'check_in' && (
           <Text style={styles.header}>{t.headerDailyInsight}</Text>
         )}
 
         {today.phase === 'idle' && <IdleView onBedtime={store.recordBedtime} t={t} />}
         {today.phase === 'sleeping' && (
-          <SleepingView bedtime={today.bedtime!} onWakeUp={store.recordWakeUp} t={t} />
+          <SleepingView bedtime={today.bedtime!} onWakeUp={store.recordWakeUp} onEditBedtime={store.editBedtime} t={t} />
         )}
         {today.phase === 'check_in' && (
           <CheckInView
@@ -52,14 +73,20 @@ export function DailyInsightScreen() {
             wakeTime={today.wakeTime!}
             techniqueIds={today.techniqueIds}
             onComplete={(data) => store.completeCheckIn(data, t, locale)}
+            onInvalidField={(y) => scrollRef.current?.scrollTo({ y: Math.max(0, y - Spacing.md), animated: true })}
             t={t}
             isPro={isPro}
           />
         )}
         {today.phase === 'completed' && (
           <CompletedView
+            generating={!!today.record && store.generatingSessionKey === sessionKey(today.record)}
             getSummary={store.getSummary}
+            bedtime={today.bedtime}
+            wakeTime={today.wakeTime}
             onNextBedtime={store.recordBedtime}
+            onEditBedtime={(d: Date) => store.editBedtime(d, t, locale)}
+            onEditWakeTime={(d: Date) => store.editWakeTime(d, t, locale)}
             t={t}
             isPro={isPro}
           />
@@ -70,8 +97,9 @@ export function DailyInsightScreen() {
 }
 
 function IdleView({ onBedtime, t }: { onBedtime: () => void; t: Translations }) {
+  const { locale } = useI18n();
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', {
+  const dateStr = now.toLocaleDateString(locale, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
@@ -115,13 +143,20 @@ function IdleView({ onBedtime, t }: { onBedtime: () => void; t: Translations }) 
 function SleepingView({
   bedtime,
   onWakeUp,
+  onEditBedtime,
   t,
 }: {
   bedtime: Date;
   onWakeUp: () => void;
+  onEditBedtime: (d: Date) => void;
   t: Translations;
 }) {
   const [elapsed, setElapsed] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editMonth, setEditMonth] = useState('');
+  const [editDay, setEditDay] = useState('');
+  const [editHour, setEditHour] = useState('');
+  const [editMin, setEditMin] = useState('');
 
   useEffect(() => {
     const update = () => {
@@ -136,6 +171,34 @@ function SleepingView({
     const interval = setInterval(update, 60000);
     return () => clearInterval(interval);
   }, [bedtime]);
+
+  const startEdit = () => {
+    setEditMonth((bedtime.getMonth() + 1).toString().padStart(2, '0'));
+    setEditDay(bedtime.getDate().toString().padStart(2, '0'));
+    setEditHour(bedtime.getHours().toString().padStart(2, '0'));
+    setEditMin(bedtime.getMinutes().toString().padStart(2, '0'));
+    setEditing(true);
+  };
+
+  const confirmEdit = () => {
+    const mo = parseInt(editMonth);
+    const d = parseInt(editDay);
+    const h = parseInt(editHour);
+    const m = parseInt(editMin);
+    if (isNaN(mo) || isNaN(d) || mo < 1 || mo > 12 || d < 1 || d > 31) {
+      Alert.alert(t.invalidDate);
+      return;
+    }
+    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+      Alert.alert(t.invalidTime);
+      return;
+    }
+    const newBedtime = new Date(bedtime);
+    newBedtime.setMonth(mo - 1, d);
+    newBedtime.setHours(h, m, 0, 0);
+    onEditBedtime(newBedtime);
+    setEditing(false);
+  };
 
   return (
     <View>
@@ -154,7 +217,60 @@ function SleepingView({
           <Text style={actionStyles.bedtimeIcon}>🛏️</Text>
           <View>
             <Text style={actionStyles.bedtimeLabel}>{t.bedtime}</Text>
-            <Text style={actionStyles.bedtimeTime}>{formatTime(bedtime)}</Text>
+            {editing ? (
+              <View>
+                <View style={actionStyles.editRow}>
+                  <TextInput
+                    style={actionStyles.editInputSmall}
+                    keyboardType="number-pad"
+                    value={editMonth}
+                    onChangeText={setEditMonth}
+                    maxLength={2}
+                    selectTextOnFocus
+                  />
+                  <Text style={actionStyles.editColon}>/</Text>
+                  <TextInput
+                    style={actionStyles.editInputSmall}
+                    keyboardType="number-pad"
+                    value={editDay}
+                    onChangeText={setEditDay}
+                    maxLength={2}
+                    selectTextOnFocus
+                  />
+                  <Text style={actionStyles.editSpacer}> </Text>
+                  <TextInput
+                    style={actionStyles.editInput}
+                    keyboardType="number-pad"
+                    value={editHour}
+                    onChangeText={setEditHour}
+                    maxLength={2}
+                    selectTextOnFocus
+                  />
+                  <Text style={actionStyles.editColon}>:</Text>
+                  <TextInput
+                    style={actionStyles.editInput}
+                    keyboardType="number-pad"
+                    value={editMin}
+                    onChangeText={setEditMin}
+                    maxLength={2}
+                    selectTextOnFocus
+                  />
+                </View>
+                <View style={actionStyles.editBtnRow}>
+                  <TouchableOpacity onPress={confirmEdit} style={actionStyles.editConfirm}>
+                    <Text style={actionStyles.editConfirmText}>{t.confirmAction}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setEditing(false)} style={actionStyles.editCancel}>
+                    <Text style={actionStyles.editCancelText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={startEdit} activeOpacity={0.6}>
+                <Text style={actionStyles.bedtimeTime}>{formatTime(bedtime)}</Text>
+                <Text style={actionStyles.editHint}>{t.tapToEdit}</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
@@ -179,11 +295,12 @@ function SleepingView({
   );
 }
 
-function CheckInView({
+export function CheckInView({
   bedtime,
   wakeTime,
   techniqueIds,
   onComplete,
+  onInvalidField,
   t,
   isPro,
 }: {
@@ -191,9 +308,21 @@ function CheckInView({
   wakeTime: Date;
   techniqueIds: string[];
   onComplete: (data: CheckInData) => void;
+  onInvalidField: (y: number) => void;
   t: Translations;
   isPro: boolean;
 }) {
+  type Field = 'sleepOnset' | 'nightWake' | 'satisfaction' | 'techniques';
+  const [errorField, setErrorField] = useState<Field | null>(null);
+  const rootY = useRef(0);
+  const fieldY = useRef<Record<Field, number>>({ sleepOnset: 0, nightWake: 0, satisfaction: 0, techniques: 0 });
+  const [errorTechnique, setErrorTechnique] = useState<string | null>(null);
+  const techniqueY = useRef<Record<string, number>>({});
+  const onsetRef = useRef<TextInput>(null);
+  const wakeRef = useRef<TextInput>(null);
+  const submitting = useRef(false);
+  const submitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (submitTimer.current) clearTimeout(submitTimer.current); }, []);
   const [sleepOnset, setSleepOnset] = useState('');
   const [nightWake, setNightWake] = useState('');
   const [satisfaction, setSatisfaction] = useState(0);
@@ -205,6 +334,22 @@ function CheckInView({
   const techniques = TECHNIQUE_DEFS.filter((td) => techniqueIds.includes(td.id));
 
   const handleSubmit = () => {
+    if (submitting.current) return;
+    const validMinutes = (value: string) => /^\d{1,3}$/.test(value);
+    const unanswered = techniques.find((tech) => !techResponses[tech.id]);
+    const invalid: Field | null = sleepOnset !== '' && !validMinutes(sleepOnset) ? 'sleepOnset'
+      : nightWake !== '' && !validMinutes(nightWake) ? 'nightWake'
+      : satisfaction < 1 || satisfaction > 5 ? 'satisfaction' : unanswered ? 'techniques' : null;
+    setErrorField(invalid);
+    setErrorTechnique(invalid === 'techniques' ? unanswered!.id : null);
+    if (invalid) {
+      if (invalid === 'sleepOnset') onsetRef.current?.focus();
+      if (invalid === 'nightWake') wakeRef.current?.focus();
+      if (invalid === 'satisfaction' || invalid === 'techniques') Keyboard.dismiss();
+      requestAnimationFrame(() => onInvalidField(rootY.current + fieldY.current[invalid] + (invalid === 'techniques' ? Spacing.sm + (techniqueY.current[unanswered!.id] ?? 0) : 0)));
+      return;
+    }
+    submitting.current = true;
     const data: CheckInData = {
       sleepOnsetMinutes: parseInt(sleepOnset) || 0,
       nightWakeMinutes: parseInt(nightWake) || 0,
@@ -221,13 +366,13 @@ function CheckInView({
       useNativeDriver: true,
     }).start();
 
-    setTimeout(() => onComplete(data), 2000);
+    submitTimer.current = setTimeout(() => onComplete(data), 2000);
   };
 
-  const canSubmit = sleepOnset !== '' && satisfaction > 0;
+
 
   return (
-    <View>
+    <View onLayout={(event) => { rootY.current = event.nativeEvent.layout.y; }}>
       <Card>
         <Text style={styles.checkInTitle}>{t.morningCheckIn}</Text>
         <Text style={styles.checkInTimeRange}>
@@ -235,44 +380,57 @@ function CheckInView({
         </Text>
       </Card>
 
+      <View onLayout={(event) => { fieldY.current.sleepOnset = event.nativeEvent.layout.y; }}>
       <Card>
         <Text style={styles.fieldLabel}>{t.sleepOnsetLabel}</Text>
         <View style={styles.inputRow}>
           <TextInput
             style={styles.numberInput}
             keyboardType="number-pad"
+            ref={onsetRef}
+            accessibilityLabel={t.sleepOnsetLabel}
             value={sleepOnset}
-            onChangeText={setSleepOnset}
-            placeholder="0"
-            placeholderTextColor={Colors.textTertiary}
+            onChangeText={(value) => { setSleepOnset(value); if (errorField === 'sleepOnset') setErrorField(null); }}
+            placeholder="—"
+            placeholderTextColor="#C4C4C4"
             maxLength={3}
           />
           <Text style={styles.inputUnit}>{t.minutes}</Text>
         </View>
+        {errorField === 'sleepOnset' && <Text style={styles.validationError} accessibilityRole="alert" accessibilityLiveRegion="polite">{t.validationMinutes}</Text>}
       </Card>
+      </View>
 
+      <View onLayout={(event) => { fieldY.current.nightWake = event.nativeEvent.layout.y; }}>
       <Card>
         <Text style={styles.fieldLabel}>{t.nightWakeLabel}</Text>
         <View style={styles.inputRow}>
           <TextInput
             style={styles.numberInput}
             keyboardType="number-pad"
+            ref={wakeRef}
+            accessibilityLabel={t.nightWakeLabel}
             value={nightWake}
-            onChangeText={setNightWake}
-            placeholder="0"
-            placeholderTextColor={Colors.textTertiary}
+            onChangeText={(value) => { setNightWake(value); if (errorField === 'nightWake') setErrorField(null); }}
+            placeholder="—"
+            placeholderTextColor="#C4C4C4"
             maxLength={3}
           />
           <Text style={styles.inputUnit}>{t.minutes}</Text>
         </View>
+        {errorField === 'nightWake' && <Text style={styles.validationError} accessibilityRole="alert" accessibilityLiveRegion="polite">{t.validationMinutes}</Text>}
       </Card>
+      </View>
 
+      <View onLayout={(event) => { fieldY.current.satisfaction = event.nativeEvent.layout.y; }}>
       <Card>
         <Text style={styles.fieldLabel}>{t.satisfactionLabel}</Text>
         <View style={{ marginTop: Spacing.sm }}>
-          <StarRating value={satisfaction} onChange={setSatisfaction} size={36} />
+          <StarRating value={satisfaction} onChange={(value) => { setSatisfaction(value); if (errorField === 'satisfaction') setErrorField(null); }} size={36} />
         </View>
+        {errorField === 'satisfaction' && <Text style={styles.validationError} accessibilityRole="alert" accessibilityLiveRegion="polite">{t.validationSatisfaction}</Text>}
       </Card>
+      </View>
 
       <Card>
         <Text style={styles.fieldLabel}>{t.memoLabel}</Text>
@@ -287,18 +445,19 @@ function CheckInView({
         />
       </Card>
 
+      <View onLayout={(event) => { fieldY.current.techniques = event.nativeEvent.layout.y; }}>
       <Card>
         <Text style={styles.fieldLabel}>{t.todaysTechniques}</Text>
         <Text style={styles.fieldHint}>{t.tapCompleted}</Text>
         {techniques.map((tech) => {
           const resp = techResponses[tech.id];
           return (
-            <View key={tech.id} style={styles.techItem}>
+            <View key={tech.id} style={styles.techItem} onLayout={(event) => { techniqueY.current[tech.id] = event.nativeEvent.layout.y; }}>
               <Text style={styles.techLabel}>{t[tech.labelKey]}</Text>
               <View style={styles.techBtnRow}>
                 <TouchableOpacity
                   style={[styles.techBtn, resp === 'done' && styles.techBtnDone]}
-                  onPress={() => setTechResponses((p) => ({ ...p, [tech.id]: 'done' }))}
+                  onPress={() => { setTechResponses((p) => ({ ...p, [tech.id]: 'done' })); if (errorTechnique === tech.id) { setErrorTechnique(null); setErrorField(null); } }}
                 >
                   <Text style={[styles.techBtnText, resp === 'done' && styles.techBtnTextActive]}>
                     ✓ {t.techResponseDone}
@@ -306,7 +465,7 @@ function CheckInView({
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.techBtn, resp === 'na' && styles.techBtnNA]}
-                  onPress={() => setTechResponses((p) => ({ ...p, [tech.id]: 'na' }))}
+                  onPress={() => { setTechResponses((p) => ({ ...p, [tech.id]: 'na' })); if (errorTechnique === tech.id) { setErrorTechnique(null); setErrorField(null); } }}
                 >
                   <Text style={[styles.techBtnText, resp === 'na' && styles.techBtnTextActive]}>
                     － {t.techResponseNA}
@@ -314,25 +473,27 @@ function CheckInView({
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.techBtn, resp === 'failed' && styles.techBtnFailed]}
-                  onPress={() => setTechResponses((p) => ({ ...p, [tech.id]: 'failed' }))}
+                  onPress={() => { setTechResponses((p) => ({ ...p, [tech.id]: 'failed' })); if (errorTechnique === tech.id) { setErrorTechnique(null); setErrorField(null); } }}
                 >
                   <Text style={[styles.techBtnText, resp === 'failed' && styles.techBtnTextActive]}>
                     × {t.techResponseFailed}
                   </Text>
                 </TouchableOpacity>
               </View>
+              {errorTechnique === tech.id && <Text style={styles.validationError} accessibilityRole="alert" accessibilityLiveRegion="polite">{t.validationTechnique}</Text>}
             </View>
           );
         })}
       </Card>
+      </View>
 
       <View style={{ paddingHorizontal: Spacing.md, marginTop: Spacing.sm }}>
         <Pressable
           onPress={handleSubmit}
-          disabled={!canSubmit}
+          disabled={encouragement !== ''}
           style={({ pressed }) => [
             styles.submitButton,
-            !canSubmit && styles.submitButtonDisabled,
+            encouragement !== '' && styles.submitButtonDisabled,
             pressed && { opacity: 0.8 },
           ]}
         >
@@ -352,32 +513,55 @@ function CheckInView({
 }
 
 function CompletedView({
+  generating,
   getSummary,
+  bedtime: rawBedtime,
+  wakeTime: rawWakeTime,
   onNextBedtime,
+  onEditBedtime,
+  onEditWakeTime,
   t,
   isPro,
 }: {
+  generating: boolean;
   getSummary: () => {
     bedtimeStr: string;
     wakeTimeStr: string;
     durationStr: string;
+    totalSleepStr: string;
     efficiency: number;
     satisfaction: number;
+    sleepOnsetMinutes: number | null;
+    nightWakeMinutes: number | null;
+    memo: string;
+    techniqueIds: string[];
+    techniqueResponses: Record<string, TechniqueResponse>;
     insight: string;
     insightTitle: string;
+    insightSource?: import('../types/sleep').InsightSource;
+    insightLocale?: string;
     insightFocusId: string;
   } | null;
+  bedtime: Date | null;
+  wakeTime: Date | null;
   onNextBedtime: () => void;
+  onEditBedtime: (d: Date) => void;
+  onEditWakeTime: (d: Date) => void;
   t: Translations;
   isPro: boolean;
 }) {
+  const { locale } = useI18n();
   const summary = getSummary();
-  const [showDetail, setShowDetail] = useState(false);
+  const [editingField, setEditingField] = useState<'bedtime' | 'wake' | null>(null);
+  const [editMonth, setEditMonth] = useState('');
+  const [editDay, setEditDay] = useState('');
+  const [editHour, setEditHour] = useState('');
+  const [editMin, setEditMin] = useState('');
 
   if (!summary) return null;
 
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', {
+  const sessionDate = rawBedtime ?? new Date();
+  const dateStr = sessionDate.toLocaleDateString(locale, {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
@@ -389,6 +573,81 @@ function CompletedView({
       : summary.efficiency >= 70
         ? Colors.amber
         : Colors.lavenderDark;
+
+  const startEdit = (field: 'bedtime' | 'wake') => {
+    const d = field === 'bedtime' ? rawBedtime : rawWakeTime;
+    if (!d) return;
+    setEditMonth((d.getMonth() + 1).toString().padStart(2, '0'));
+    setEditDay(d.getDate().toString().padStart(2, '0'));
+    setEditHour(d.getHours().toString().padStart(2, '0'));
+    setEditMin(d.getMinutes().toString().padStart(2, '0'));
+    setEditingField(field);
+  };
+
+  const confirmEdit = () => {
+    const mo = parseInt(editMonth);
+    const d = parseInt(editDay);
+    const h = parseInt(editHour);
+    const m = parseInt(editMin);
+    if (isNaN(mo) || isNaN(d) || mo < 1 || mo > 12 || d < 1 || d > 31) {
+      Alert.alert(t.invalidDate);
+      return;
+    }
+    if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+      Alert.alert(t.invalidTime);
+      return;
+    }
+    const ref = editingField === 'bedtime' ? rawBedtime : rawWakeTime;
+    if (!ref) return;
+    const newDate = new Date(ref);
+    newDate.setMonth(mo - 1, d);
+    newDate.setHours(h, m, 0, 0);
+    if (editingField === 'bedtime') {
+      onEditBedtime(newDate);
+    } else {
+      onEditWakeTime(newDate);
+    }
+    setEditingField(null);
+  };
+
+  const renderTimeCard = (field: 'bedtime' | 'wake', icon: string, label: string, value: string, cardStyle: any) => {
+    if (editingField === field) {
+      return (
+        <Card style={[styles.timeCard, cardStyle]}>
+          <Text style={styles.timeCardIcon}>{icon}</Text>
+          <Text style={styles.timeCardLabel}>{label}</Text>
+          <View style={actionStyles.editRow}>
+            <TextInput style={actionStyles.editInputCompact} keyboardType="number-pad" value={editMonth} onChangeText={setEditMonth} maxLength={2} selectTextOnFocus />
+            <Text style={actionStyles.editColonSmall}>/</Text>
+            <TextInput style={actionStyles.editInputCompact} keyboardType="number-pad" value={editDay} onChangeText={setEditDay} maxLength={2} selectTextOnFocus />
+          </View>
+          <View style={actionStyles.editRow}>
+            <TextInput style={actionStyles.editInputCompact} keyboardType="number-pad" value={editHour} onChangeText={setEditHour} maxLength={2} selectTextOnFocus />
+            <Text style={actionStyles.editColonSmall}>:</Text>
+            <TextInput style={actionStyles.editInputCompact} keyboardType="number-pad" value={editMin} onChangeText={setEditMin} maxLength={2} selectTextOnFocus />
+          </View>
+          <View style={actionStyles.editBtnRow}>
+            <TouchableOpacity onPress={confirmEdit} style={actionStyles.editConfirm}>
+              <Text style={actionStyles.editConfirmText}>{t.confirmAction}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setEditingField(null)} style={actionStyles.editCancel}>
+              <Text style={actionStyles.editCancelText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </Card>
+      );
+    }
+    return (
+      <TouchableOpacity onPress={() => startEdit(field)} activeOpacity={0.6} style={{ flex: 1 }}>
+        <Card style={[styles.timeCard, cardStyle]}>
+          <Text style={styles.timeCardIcon}>{icon}</Text>
+          <Text style={styles.timeCardLabel}>{label}</Text>
+          <Text style={styles.timeCardValue}>{value}</Text>
+          <Text style={actionStyles.editHint}>{t.tapToEdit}</Text>
+        </Card>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <View>
@@ -423,84 +682,44 @@ function CompletedView({
       </Card>
 
       <View style={styles.twoCol}>
-        <Card style={[styles.timeCard, styles.bedtimeCard]}>
-          <Text style={styles.timeCardIcon}>🛏️</Text>
-          <Text style={styles.timeCardLabel}>{t.bedtime}</Text>
-          <Text style={styles.timeCardValue}>{summary.bedtimeStr}</Text>
-        </Card>
-        <Card style={[styles.timeCard, styles.wakeCard]}>
-          <Text style={styles.timeCardIcon}>☀️</Text>
-          <Text style={styles.timeCardLabel}>{t.wakeTime}</Text>
-          <Text style={styles.timeCardValue}>{summary.wakeTimeStr}</Text>
-        </Card>
+        {renderTimeCard('bedtime', '🛏️', t.bedtime, summary.bedtimeStr, styles.bedtimeCard)}
+        {renderTimeCard('wake', '☀️', t.wakeTime, summary.wakeTimeStr, styles.wakeCard)}
       </View>
 
-      <TouchableOpacity onPress={() => setShowDetail(true)} activeOpacity={0.8}>
-        <Card style={styles.efficiencyCard}>
-          <View style={styles.efficiencyRow}>
-            <View style={[styles.efficiencyRing, { borderColor: effColor }]}>
-              <Text style={[styles.efficiencyPct, { color: effColor }]}>
-                {summary.efficiency}%
-              </Text>
-            </View>
-            <View style={styles.efficiencyInfo}>
-              <Text style={styles.efficiencyLabel}>{t.sleepEfficiency}</Text>
-              <Text style={styles.efficiencyDetail}>
-                {summary.durationStr} {t.asleep}
-              </Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
+      <Card style={styles.efficiencyCard}>
+        <View style={styles.efficiencyRow}>
+          <View style={[styles.efficiencyRing, { borderColor: effColor }]}>
+            <Text style={[styles.efficiencyPct, { color: effColor }]}>
+              {summary.efficiency}%
+            </Text>
           </View>
-        </Card>
-      </TouchableOpacity>
-
-      <Card style={styles.satisfactionCard}>
-        <Text style={styles.satisfactionLabel}>{t.satisfactionLabel}</Text>
-        <View style={styles.satisfactionStars}>
-          <StarRating value={summary.satisfaction} readonly size={32} />
+          <View style={styles.efficiencyInfo}>
+            <Text style={styles.efficiencyLabel}>{t.sleepEfficiency}</Text>
+            <Text style={styles.efficiencyDetail}>
+              {summary.durationStr} {t.inBed}
+            </Text>
+          </View>
         </View>
       </Card>
 
-      {isPro ? (
-        <TouchableOpacity onPress={() => setShowDetail(true)} activeOpacity={0.8}>
-          <InsightCard insight={summary.insight} insightTitle={summary.insightTitle} t={t} />
-        </TouchableOpacity>
-      ) : (
+      <SleepDayContent data={summary} t={t} showInsight={false} />
+
+      {isPro && (generating || summary.insight) ? (() => {
+        const localeMismatch = summary.insightLocale && summary.insightLocale !== locale;
+        const display = localeMismatch
+          ? buildTemplateInsight(summary.efficiency, summary.insightFocusId, t)
+          : { title: summary.insightTitle, message: summary.insight };
+        return <InsightCard generating={generating} insight={display.message} insightTitle={display.title} insightSource={localeMismatch ? undefined : summary.insightSource} t={t} />;
+      })() : !isPro ? (
         <Card variant="alt" style={styles.proHintCard}>
           <Text style={styles.proHintIcon}>✨</Text>
           <Text style={styles.proHintText}>{t.insightProOnly}</Text>
           <Text style={styles.proHintButton}>{t.upgradeButton}</Text>
         </Card>
-      )}
-
-      {isPro && (
-        <SleepDetailOverlay
-          visible={showDetail}
-          data={summary}
-          onClose={() => setShowDetail(false)}
-          t={t}
-        />
-      )}
+      ) : null}
 
       <View style={{ height: Spacing.xxl }} />
     </View>
-  );
-}
-
-function InsightCard({ insight, insightTitle, t }: { insight: string; insightTitle: string; t: Translations }) {
-  const { displayed, done, skip } = useTypewriter(insight, 25);
-
-  return (
-    <Pressable onPress={() => !done && skip()}>
-      <Card style={styles.insightCard}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm }}>
-          <Text style={styles.insightIcon}>💡</Text>
-          <Text style={styles.insightTitle}>{insightTitle || t.todaysInsight}</Text>
-        </View>
-        <Text style={styles.insightText}>{displayed}</Text>
-        {!done && <Text style={styles.insightTapHint}>{t.tapToShowAll}</Text>}
-      </Card>
-    </Pressable>
   );
 }
 
@@ -657,6 +876,84 @@ const actionStyles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: Spacing.xs,
   },
+  editRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  editInput: {
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.lavenderDark,
+    width: 44,
+    textAlign: 'center',
+    paddingVertical: Spacing.xs,
+  },
+  editInputSmall: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+    color: Colors.textSecondary,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.lavenderLight,
+    width: 36,
+    textAlign: 'center',
+    paddingVertical: Spacing.xs,
+  },
+  editSpacer: {
+    width: Spacing.sm,
+  },
+  editColon: {
+    fontSize: FontSize.xl,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+  },
+  editBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  editConfirm: {
+    backgroundColor: Colors.lavenderDark,
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+  },
+  editConfirmText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.white,
+  },
+  editCancel: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  editCancelText: {
+    fontSize: FontSize.md,
+    color: Colors.textTertiary,
+  },
+  editHint: {
+    fontSize: FontSize.xs,
+    color: Colors.textTertiary,
+    marginTop: 2,
+  },
+  editInputCompact: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.lavenderDark,
+    width: 32,
+    textAlign: 'center',
+    paddingVertical: 2,
+  },
+  editColonSmall: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+    color: Colors.textPrimary,
+  },
 });
 
 const styles = StyleSheet.create({
@@ -760,6 +1057,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
   },
+  validationError: { color: '#A63E4B', fontSize: FontSize.sm, marginTop: Spacing.sm },
   numberInput: {
     fontSize: FontSize.xxl,
     fontWeight: FontWeight.bold,
@@ -979,29 +1277,6 @@ const styles = StyleSheet.create({
   },
   satisfactionStars: {
     alignItems: 'center' as const,
-  },
-  insightCard: {
-    backgroundColor: Colors.lavenderLight,
-  },
-  insightTitle: {
-    fontSize: FontSize.sm,
-    fontWeight: FontWeight.semibold,
-    color: Colors.lavenderDark,
-  },
-  insightIcon: {
-    fontSize: 18,
-    marginRight: Spacing.xs,
-  },
-  insightText: {
-    fontSize: FontSize.md,
-    color: Colors.textPrimary,
-    lineHeight: 22,
-  },
-  insightTapHint: {
-    fontSize: FontSize.xs,
-    color: Colors.textTertiary,
-    marginTop: Spacing.sm,
-    textAlign: 'right',
   },
   proHintCard: {
     alignItems: 'center' as const,

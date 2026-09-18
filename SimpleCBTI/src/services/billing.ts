@@ -9,8 +9,8 @@ export const PRODUCT_IDS = {
 } as const;
 
 export const PLAN_INFO = [
-  { id: PRODUCT_IDS.MONTHLY, price: '$10.99', period: 'month', periodJa: '月' },
-  { id: PRODUCT_IDS.SIX_MONTH, price: '$49.99', period: '6 months', periodJa: '6か月' },
+  { id: PRODUCT_IDS.MONTHLY, price: '$11.99', period: 'month', periodJa: '月' },
+  { id: PRODUCT_IDS.SIX_MONTH, price: '$55.99', period: '6 months', periodJa: '6か月' },
 ] as const;
 
 type IAP = typeof import('react-native-iap');
