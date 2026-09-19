@@ -18,6 +18,7 @@ import { hi } from './locales/hi';
 import { th } from './locales/th';
 import { vi } from './locales/vi';
 import { id } from './locales/id';
+import { tr } from './locales/tr';
 
 const localeMap: Record<SupportedLocale, Translations> = {
   en,
@@ -36,6 +37,7 @@ const localeMap: Record<SupportedLocale, Translations> = {
   th,
   vi,
   id,
+  tr,
 };
 
 export const SUPPORTED_LOCALES: { code: SupportedLocale; label: string }[] = [
@@ -55,6 +57,7 @@ export const SUPPORTED_LOCALES: { code: SupportedLocale; label: string }[] = [
   { code: 'th', label: 'ไทย' },
   { code: 'vi', label: 'Tiếng Việt' },
   { code: 'id', label: 'Bahasa Indonesia' },
+  { code: 'tr', label: 'Türkçe' },
 ];
 
 function detectLocale(): SupportedLocale {

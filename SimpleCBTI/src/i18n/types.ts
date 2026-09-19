@@ -244,4 +244,5 @@ export type SupportedLocale =
   | 'en' | 'ja' | 'zh-Hans' | 'zh-Hant'
   | 'ko' | 'es' | 'fr' | 'de'
   | 'pt' | 'it' | 'ru' | 'ar'
-  | 'hi' | 'th' | 'vi' | 'id';
+  | 'hi' | 'th' | 'vi' | 'id'
+  | 'tr';
